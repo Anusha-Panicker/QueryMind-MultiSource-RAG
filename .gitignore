@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+papers/
+extracted_text/
+
+# Model/cache files
+.cache/
