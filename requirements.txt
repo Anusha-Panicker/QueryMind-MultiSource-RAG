@@ -1,0 +1,11 @@
+streamlit
+pymupdf
+langchain-text-splitters
+sentence-transformers
+faiss-cpu
+groq
+rank_bm25
+python-dotenv
+youtube-transcript-api
+requests
+arxiv
