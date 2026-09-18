@@ -1,38 +1,48 @@
 import os
 import time
 import re
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
-import fitz
-import faiss
 import requests
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from groq import Groq
 from dotenv import load_dotenv
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from rank_bm25 import BM25Okapi
 from youtube_transcript_api import YouTubeTranscriptApi
 
 load_dotenv()
 
-import torch
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Loading models on {device}... (this happens once)")
-
-embed_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
-reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=device)
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-print("Models ready!")
+
+
+@lru_cache(maxsize=1)
+def get_embed_model():
+    import torch
+    from sentence_transformers import SentenceTransformer
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading embedding model on {device}...")
+    return SentenceTransformer('all-MiniLM-L6-v2', device=device)
+
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    import torch
+    from sentence_transformers import CrossEncoder
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading reranker on {device}...")
+    return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=device)
 
 
 def normalize_vectors(vectors):
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     return vectors / norms
 
-import arxiv
-
 def search_topic_arxiv(topic, max_results=15):
     """Fallback source: arXiv, used if Semantic Scholar is rate-limited."""
+    import arxiv
+    import fitz
+
     search = arxiv.Search(
         query=f'all:"{topic}"',
         max_results=max_results,
@@ -40,32 +50,39 @@ def search_topic_arxiv(topic, max_results=15):
     )
     client_arxiv = arxiv.Client(page_size=10, delay_seconds=3, num_retries=2)
 
-    papers = []
-    for i, result in enumerate(client_arxiv.results(search)):
-        r = requests.get(result.pdf_url)
-        doc = fitz.open(stream=r.content, filetype="pdf")
+    results = list(client_arxiv.results(search))
+
+    def load_result(item):
+        result, index = item
+        response = requests.get(result.pdf_url, timeout=15)
+        doc = fitz.open(stream=response.content, filetype="pdf")
         full_text = "".join(page.get_text() for page in doc)
         doc.close()
-        papers.append({
-            "id": f"paper_{i+1}",
+        return {
+            "id": f"paper_{index + 1}",
             "title": result.title,
             "authors": [a.name for a in result.authors],
             "published": str(result.published.date()),
             "pdf_url": result.pdf_url,
             "full_text": full_text
-        })
+        }
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        loaded = executor.map(load_result, enumerate(results))
+        papers = [paper for paper in loaded if paper["full_text"].strip()]
     return papers
 
 
 # ---------------- SOURCE 1: Topic search (Semantic Scholar) ----------------
 
+@lru_cache(maxsize=16)
 def search_topic(topic, max_results=15, max_retries=3):
     """
     Tries Semantic Scholar first (broader coverage). If it's rate-limited
     even after retries, automatically falls back to arXiv.
     """
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    params = {"query": topic, "limit": 50, "fields": "title,authors,year,openAccessPdf,url"}
+    params = {"query": topic, "limit": min(max_results * 3, 50), "fields": "title,authors,year,openAccessPdf,url"}
     headers = {}
     api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
     if api_key:
@@ -73,7 +90,7 @@ def search_topic(topic, max_results=15, max_retries=3):
 
     results = None
     for attempt in range(max_retries):
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code == 200:
             results = response.json().get("data", [])
             break
@@ -94,31 +111,37 @@ def search_topic(topic, max_results=15, max_retries=3):
                 f"Please wait a few minutes and try again. (arXiv error: {e})"
             )
 
-    papers = []
-    for result in results:
-        if len(papers) >= max_results:
-            break
-        pdf_info = result.get("openAccessPdf")
-        if not pdf_info or not pdf_info.get("url"):
-            continue
-        pdf_url = pdf_info["url"]
+    candidates = [
+        result for result in results
+        if result.get("openAccessPdf", {}).get("url")
+    ][:max_results * 2]
+
+    def load_result(item):
+        result, index = item
+        import fitz
+
+        pdf_url = result["openAccessPdf"]["url"]
         try:
-            r = requests.get(pdf_url, timeout=15)
-            doc = fitz.open(stream=r.content, filetype="pdf")
+            response = requests.get(pdf_url, timeout=15)
+            doc = fitz.open(stream=response.content, filetype="pdf")
             full_text = "".join(page.get_text() for page in doc)
             doc.close()
         except Exception:
-            continue
+            return None
         if len(full_text.strip()) < 500:
-            continue
-        papers.append({
-            "id": f"paper_{len(papers)+1}",
+            return None
+        return {
+            "id": f"paper_{index + 1}",
             "title": result.get("title"),
             "authors": [a.get("name") for a in result.get("authors", [])],
             "published": str(result.get("year")),
             "pdf_url": pdf_url,
             "full_text": full_text
-        })
+        }
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        papers = [paper for paper in executor.map(load_result, enumerate(candidates)) if paper]
+    papers = papers[:max_results]
 
     if len(papers) == 0:
         print("Semantic Scholar returned no usable open-access PDFs — falling back to arXiv...")
@@ -131,6 +154,8 @@ def search_topic(topic, max_results=15, max_retries=3):
 
 def read_uploaded_pdf(uploaded_file):
     """Takes a Streamlit-uploaded file, returns its extracted text."""
+    import fitz
+
     pdf_bytes = uploaded_file.read()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     full_text = "".join(page.get_text() for page in doc)
@@ -154,11 +179,13 @@ def extract_youtube_id(url):
 
 
 def get_youtube_transcript(url):
-    """Takes a full YouTube URL, returns its transcript as plain text."""
+    """Return a Hindi or English YouTube transcript as plain text."""
     video_id = extract_youtube_id(url)
     ytt_api = YouTubeTranscriptApi()
-    fetched_transcript = ytt_api.fetch(video_id)
+    fetched_transcript = ytt_api.fetch(video_id, languages=("hi", "en"))
     full_text = " ".join([snippet.text for snippet in fetched_transcript])
+    if not full_text.strip():
+        raise ValueError("The video transcript is empty or unavailable.")
     return full_text
 
 
@@ -169,6 +196,10 @@ def build_corpus_from_texts(texts_with_sources, chunk_size=800, chunk_overlap=10
     texts_with_sources: list of (text, source_name) tuples.
     Builds chunks, embeddings, FAISS index, and BM25 index.
     """
+    import faiss
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from rank_bm25 import BM25Okapi
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     all_chunks, chunk_sources = [], []
     for text, source in texts_with_sources:
@@ -176,7 +207,7 @@ def build_corpus_from_texts(texts_with_sources, chunk_size=800, chunk_overlap=10
             all_chunks.append(chunk)
             chunk_sources.append(source)
 
-    embeddings = embed_model.encode(all_chunks, show_progress_bar=False)
+    embeddings = get_embed_model().encode(all_chunks, show_progress_bar=False)
     normalized_embeddings = normalize_vectors(np.array(embeddings).astype('float32'))
     index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
     index.add(normalized_embeddings)
@@ -202,7 +233,7 @@ def hybrid_search(corpus, question, top_k=5, candidate_pool=15, max_per_source=2
     index = corpus["index"]
     bm25 = corpus["bm25"]
 
-    question_embedding = embed_model.encode([question])
+    question_embedding = get_embed_model().encode([question])
     question_embedding = normalize_vectors(np.array(question_embedding).astype('float32'))
     candidate_pool = min(candidate_pool, len(all_chunks))
     distances, vector_indices = index.search(question_embedding, candidate_pool)
@@ -234,7 +265,7 @@ def hybrid_search_reranked(corpus, question, top_k=5, candidate_pool=15, max_per
     all_chunks = corpus["all_chunks"]
     candidates = hybrid_search(corpus, question, top_k=candidate_pool, candidate_pool=candidate_pool, max_per_source=max_per_source)
     pairs = [[question, all_chunks[idx]] for idx in candidates]
-    rerank_scores = reranker.predict(pairs)
+    rerank_scores = get_reranker().predict(pairs)
     scored = sorted(zip(candidates, rerank_scores), key=lambda x: x[1], reverse=True)
     return [idx for idx, score in scored[:top_k]]
 
@@ -272,7 +303,8 @@ def ask_question(corpus, question, top_k=5, small_doc_threshold=25):
     sources = [chunk_sources[idx] for idx in top_indices]
     context = "\n\n---\n\n".join(retrieved_chunks)
 
-    prompt = ("Answer the question using ONLY the context below. If the answer isn't in the context, say so.\n\n"
+    prompt = ("Answer the question in English using ONLY the context below. "
+              "Translate relevant Hindi content into clear English. If the answer isn't in the context, say so.\n\n"
               "Context:\n" + context + "\n\nQuestion: " + question + "\n\nAnswer:")
 
     response = client.chat.completions.create(

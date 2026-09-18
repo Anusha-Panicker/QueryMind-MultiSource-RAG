@@ -1,3 +1,5 @@
+import html
+
 import streamlit as st
 from engine import (
     search_topic,
@@ -72,6 +74,39 @@ st.markdown("""
     .stButton>button:hover {
         opacity: 0.9;
     }
+    .youtube-panel {
+        background: linear-gradient(135deg, #17212b 0%, #102d32 100%);
+        border: 1px solid #28515a;
+        border-radius: 12px;
+        padding: 1.25rem 1.4rem 0.9rem;
+        margin-bottom: 1rem;
+    }
+    .youtube-kicker {
+        color: #2CB67D;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 0.25rem;
+    }
+    .youtube-title {
+        color: #F5F7FA;
+        font-size: 1.35rem;
+        font-weight: 750;
+        margin: 0;
+    }
+    .youtube-copy {
+        color: #B8C4CC;
+        margin: 0.35rem 0 0.9rem;
+    }
+    .youtube-url {
+        background: #101820;
+        border: 1px solid #35636b;
+        border-radius: 8px;
+        color: #D9F7EE;
+        padding: 0.55rem 0.8rem;
+        overflow-wrap: anywhere;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,52 +168,66 @@ with tab2:
 
 with tab3:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    yt_url = st.text_input("Paste a YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
-    if st.button("▶️ Process Video", key="yt_btn"):
-        with st.spinner("Fetching transcript..."):
-            try:
-                transcript = get_youtube_transcript(yt_url)
-                st.session_state.corpus = build_corpus_from_texts([(transcript, yt_url)])
-                st.session_state.corpus_label = f"youtube:{yt_url}"
-                st.session_state.raw_text_for_summary = transcript
-                st.session_state.paper_list = None
-            except Exception as e:
-                st.error(f"Couldn't fetch transcript: {e}")
+    st.markdown(
+        '<div class="youtube-panel">'
+        '<div class="youtube-kicker">Video intelligence</div>'
+        '<p class="youtube-title">Bring a conversation into your research workspace</p>'
+        '<p class="youtube-copy">Paste a public YouTube link. Hindi and English transcripts are supported.</p>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    yt_url = st.text_input(
+        "YouTube URL",
+        placeholder="https://www.youtube.com/watch?v=...",
+        help="Use a standard YouTube, youtu.be, or Shorts URL with captions available."
+    )
+    if st.button("▶️ Load transcript", key="yt_btn", use_container_width=True):
+        if not yt_url.strip():
+            st.warning("Paste a YouTube URL to continue.")
+        else:
+            with st.spinner("Finding Hindi or English captions and indexing the video..."):
+                try:
+                    transcript = get_youtube_transcript(yt_url.strip())
+                    st.session_state.corpus = build_corpus_from_texts([(transcript, yt_url.strip())])
+                    st.session_state.corpus_label = f"youtube:{yt_url.strip()}"
+                    st.session_state.raw_text_for_summary = transcript
+                    st.session_state.paper_list = None
+                except Exception as e:
+                    st.error(f"Couldn't fetch transcript: {e}")
     if st.session_state.corpus_label and st.session_state.corpus_label.startswith("youtube:"):
-        st.success("✅ Transcript loaded and indexed")
+        st.success("✅ Transcript loaded and indexed. Hindi and English captions are supported.")
+        st.markdown(
+            f'<div class="youtube-url">🔗 {html.escape(st.session_state.corpus_label[len("youtube:") :])}</div>',
+            unsafe_allow_html=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------- Q&A + Summarize section ----------------
 if st.session_state.corpus is not None:
     st.markdown("---")
-    col_q, col_s = st.columns([3, 1])
+    question = st.text_input("💬 Ask a question", placeholder="What is this about?")
+    if st.button("Ask", key="ask_btn") and question:
+        with st.spinner("Thinking..."):
+            answer, sources = ask_question(st.session_state.corpus, question)
+        st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
+        unique_sources = list(dict.fromkeys(sources))
+        st.markdown("**Sources:**")
+        pills = "".join([f'<span class="source-pill">📄 {s}</span>' for s in unique_sources])
+        st.markdown(pills, unsafe_allow_html=True)
 
-    with col_q:
-        question = st.text_input("💬 Ask a question", placeholder="What is this about?")
-        if st.button("Ask", key="ask_btn") and question:
-            with st.spinner("Thinking..."):
-                answer, sources = ask_question(st.session_state.corpus, question)
-            st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
-            unique_sources = list(dict.fromkeys(sources))
-            st.markdown("**Sources:**")
-            pills = "".join([f'<span class="source-pill">📄 {s}</span>' for s in unique_sources])
-            st.markdown(pills, unsafe_allow_html=True)
-
-    with col_s:
-        st.write("")
-        st.write("")
-        if st.button("📝 Summarize", key="summarize_btn"):
-            with st.spinner("Summarizing..."):
-                if st.session_state.raw_text_for_summary:
-                    text_to_summarize = st.session_state.raw_text_for_summary
-                    label = st.session_state.corpus_label
-                else:
-                    all_texts = " ".join(st.session_state.corpus["all_chunks"][:30])
-                    text_to_summarize = all_texts
-                    label = "the loaded content"
-                summary = summarize_text(text_to_summarize, source_name=label)
-                st.session_state.last_summary = summary
-        if "last_summary" in st.session_state:
-            st.markdown(f'<div class="answer-box">{st.session_state.last_summary}</div>', unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 1.25rem;'></div>", unsafe_allow_html=True)
+    if st.button("📝 Summarize", key="summarize_btn"):
+        with st.spinner("Summarizing..."):
+            if st.session_state.raw_text_for_summary:
+                text_to_summarize = st.session_state.raw_text_for_summary
+                label = st.session_state.corpus_label
+            else:
+                all_texts = " ".join(st.session_state.corpus["all_chunks"][:30])
+                text_to_summarize = all_texts
+                label = "the loaded content"
+            summary = summarize_text(text_to_summarize, source_name=label)
+            st.session_state.last_summary = summary
+    if "last_summary" in st.session_state:
+        st.markdown(f'<div class="answer-box">{st.session_state.last_summary}</div>', unsafe_allow_html=True)
 else:
     st.info("👆 Choose a source above to get started — search a topic, upload a PDF, or paste a YouTube link.")
