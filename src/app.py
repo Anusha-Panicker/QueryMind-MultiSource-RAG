@@ -20,92 +20,152 @@ st.set_page_config(
 # ---------------- Custom styling ----------------
 st.markdown("""
 <style>
-    .main {
-        background-color: #0e1117;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+
+    .stApp {
+        background: radial-gradient(circle at top center, #1a1c2c 0%, #0e1117 100%);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        color: #E0E0E0;
     }
+
+    /* Glassmorphism Cards */
+    .card, .youtube-panel {
+        background: rgba(26, 28, 36, 0.6) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 20px !important;
+        padding: 2rem !important;
+        margin-bottom: 1.5rem !important;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+
+    /* Hero Section */
     .hero {
         text-align: center;
-        padding: 2.5rem 1rem 1.5rem 1rem;
+        padding: 4rem 1rem 3rem 1rem;
     }
     .hero h1 {
-        font-size: 3rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #7F5AF0, #2CB67D);
+        font-size: 4rem !important;
+        font-weight: 800 !important;
+        background: linear-gradient(90deg, #7F5AF0, #2CB67D, #7F5AF0);
+        background-size: 200% auto;
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-bottom: 0;
+        animation: gradientShift 5s linear infinite;
+        margin-bottom: 0.5rem !important;
+        letter-spacing: -0.02em;
+    }
+    @keyframes gradientShift {
+        0% { background-position: 0% center; }
+        100% { background-position: 200% center; }
     }
     .hero p {
-        color: #A0A0A0;
-        font-size: 1.1rem;
-        margin-top: 0.3rem;
+        color: #B0B0B0;
+        font-size: 1.2rem;
+        max-width: 700px;
+        margin: 0 auto 2rem auto;
+        line-height: 1.6;
     }
-    .card {
-        background-color: #1a1c24;
-        border: 1px solid #2a2d3a;
-        border-radius: 14px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-    }
+
+    /* Answer Box with Neon Glow */
     .answer-box {
-        background: linear-gradient(135deg, rgba(127,90,240,0.08), rgba(44,182,125,0.08));
-        border-left: 4px solid #7F5AF0;
-        border-radius: 10px;
-        padding: 1.2rem 1.5rem;
-        margin-top: 1rem;
+        background: rgba(20, 22, 30, 0.7) !important;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(127, 90, 240, 0.3) !important;
+        border-left: 5px solid #7F5AF0 !important;
+        border-radius: 15px !important;
+        padding: 1.5rem !important;
+        margin-top: 1.5rem !important;
+        box-shadow: 0 0 20px rgba(127, 90, 240, 0.1);
+        color: #F5F7FA;
+        line-height: 1.7;
     }
+
+    /* Knowledge Chips (Source Pills) */
     .source-pill {
         display: inline-block;
-        background-color: #2a2d3a;
+        background: rgba(44, 182, 125, 0.1);
         color: #2CB67D;
-        border-radius: 20px;
-        padding: 0.3rem 0.9rem;
-        margin: 0.2rem;
-        font-size: 0.85rem;
-    }
-    .stButton>button {
-        background: linear-gradient(90deg, #7F5AF0, #2CB67D);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 0.6rem 1.5rem;
+        border: 1px solid rgba(44, 182, 125, 0.3);
+        border-radius: 100px;
+        padding: 0.4rem 1rem;
+        margin: 0.3rem;
+        font-size: 0.8rem;
         font-weight: 600;
+        transition: all 0.3s ease;
+        cursor: default;
+    }
+    .source-pill:hover {
+        background: rgba(44, 182, 125, 0.2);
+        border-color: #2CB67D;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(44, 182, 125, 0.2);
+    }
+
+    /* Premium Buttons */
+    .stButton>button {
+        background: linear-gradient(135deg, #7F5AF0 0%, #2CB67D 100%) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 12px !important;
+        padding: 0.7rem 2rem !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 0 4px 15px rgba(127, 90, 240, 0.3) !important;
     }
     .stButton>button:hover {
-        opacity: 0.9;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(127, 90, 240, 0.5) !important;
+        opacity: 1 !important;
     }
+
+    /* YouTube Panel Specifics */
     .youtube-panel {
-        background: linear-gradient(135deg, #17212b 0%, #102d32 100%);
-        border: 1px solid #28515a;
-        border-radius: 12px;
-        padding: 1.25rem 1.4rem 0.9rem;
-        margin-bottom: 1rem;
+        background: rgba(15, 25, 35, 0.7) !important;
+        border: 1px solid rgba(44, 182, 125, 0.2) !important;
     }
     .youtube-kicker {
         color: #2CB67D;
-        font-size: 0.75rem;
-        font-weight: 700;
-        letter-spacing: 0.08em;
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
-        margin-bottom: 0.25rem;
+        margin-bottom: 0.5rem;
     }
     .youtube-title {
-        color: #F5F7FA;
-        font-size: 1.35rem;
-        font-weight: 750;
+        color: #FFFFFF;
+        font-size: 1.5rem;
+        font-weight: 700;
         margin: 0;
     }
     .youtube-copy {
-        color: #B8C4CC;
-        margin: 0.35rem 0 0.9rem;
+        color: #A0A0A0;
+        margin: 0.5rem 0 1.2rem;
+        font-size: 0.95rem;
     }
     .youtube-url {
-        background: #101820;
-        border: 1px solid #35636b;
-        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(44, 182, 125, 0.3);
+        border-radius: 10px;
         color: #D9F7EE;
-        padding: 0.55rem 0.8rem;
-        overflow-wrap: anywhere;
+        padding: 0.7rem 1rem;
+        font-family: 'Courier New', monospace;
+        font-size: 0.85rem;
+    }
+
+    /* Input Field Styling */
+    .stTextInput > div > div > input {
+        background-color: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        color: white !important;
+        border-radius: 12px !important;
+        padding: 0.75rem 1rem !important;
+        transition: all 0.3s ease;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #7F5AF0 !important;
+        box-shadow: 0 0 0 2px rgba(127, 90, 240, 0.2) !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -139,7 +199,7 @@ with tab1:
             papers = search_topic(topic, max_results=num_papers)
             if papers:
                 texts_with_sources = [(p["full_text"], p["title"]) for p in papers]
-                st.session_state.corpus = build_corpus_from_texts(texts_with_sources)
+                st.session_state.corpus = build_corpus_from_texts(texts_with_sources, existing_corpus=st.session_state.corpus)
                 st.session_state.corpus_label = f"topic:{topic}"
                 st.session_state.paper_list = papers
                 st.session_state.raw_text_for_summary = None
@@ -158,7 +218,7 @@ with tab2:
     if uploaded_file is not None and st.button("📥 Process PDF", key="pdf_btn"):
         with st.spinner("Reading and indexing your PDF..."):
             text = read_uploaded_pdf(uploaded_file)
-            st.session_state.corpus = build_corpus_from_texts([(text, uploaded_file.name)])
+            st.session_state.corpus = build_corpus_from_texts([(text, uploaded_file.name)], existing_corpus=st.session_state.corpus)
             st.session_state.corpus_label = f"pdf:{uploaded_file.name}"
             st.session_state.raw_text_for_summary = text
             st.session_state.paper_list = None
@@ -188,7 +248,7 @@ with tab3:
             with st.spinner("Finding Hindi or English captions and indexing the video..."):
                 try:
                     transcript = get_youtube_transcript(yt_url.strip())
-                    st.session_state.corpus = build_corpus_from_texts([(transcript, yt_url.strip())])
+                    st.session_state.corpus = build_corpus_from_texts([(transcript, yt_url.strip())], existing_corpus=st.session_state.corpus)
                     st.session_state.corpus_label = f"youtube:{yt_url.strip()}"
                     st.session_state.raw_text_for_summary = transcript
                     st.session_state.paper_list = None

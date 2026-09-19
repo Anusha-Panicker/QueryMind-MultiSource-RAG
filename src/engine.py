@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import logging
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -8,29 +9,30 @@ import requests
 from groq import Groq
 from dotenv import load_dotenv
 from youtube_transcript_api import YouTubeTranscriptApi
+import torch
+from sentence_transformers import SentenceTransformer, CrossEncoder
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+MODEL_NAME = os.environ.get("GROQ_MODEL_NAME", "openai/gpt-oss-120b")
 
 
 @lru_cache(maxsize=1)
 def get_embed_model():
-    import torch
-    from sentence_transformers import SentenceTransformer
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading embedding model on {device}...")
+    logger.info(f"Loading embedding model on {device}...")
     return SentenceTransformer('all-MiniLM-L6-v2', device=device)
 
 
 @lru_cache(maxsize=1)
 def get_reranker():
-    import torch
-    from sentence_transformers import CrossEncoder
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading reranker on {device}...")
+    logger.info(f"Loading reranker on {device}...")
     return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=device)
 
 
@@ -124,7 +126,7 @@ def search_topic(topic, max_results=15, max_retries=3):
         try:
             response = requests.get(pdf_url, timeout=15)
             doc = fitz.open(stream=response.content, filetype="pdf")
-            full_text = "".join(page.get_text() for page in doc)
+            full_text = "".join(page.get_text("text", sort=True) for page in doc)
             doc.close()
         except Exception:
             return None
@@ -158,7 +160,7 @@ def read_uploaded_pdf(uploaded_file):
 
     pdf_bytes = uploaded_file.read()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    full_text = "".join(page.get_text() for page in doc)
+    full_text = "".join(page.get_text("text", sort=True) for page in doc)
     doc.close()
     return full_text
 
@@ -191,29 +193,49 @@ def get_youtube_transcript(url):
 
 # ---------------- Building a searchable corpus from any source ----------------
 
-def build_corpus_from_texts(texts_with_sources, chunk_size=800, chunk_overlap=100):
+def build_corpus_from_texts(texts_with_sources, chunk_size=800, chunk_overlap=100, existing_corpus=None):
     """
     texts_with_sources: list of (text, source_name) tuples.
     Builds chunks, embeddings, FAISS index, and BM25 index.
+    If existing_corpus is provided, it updates it incrementally.
     """
     import faiss
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from rank_bm25 import BM25Okapi
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    all_chunks, chunk_sources = [], []
+
+    new_chunks = []
+    new_chunk_sources = []
     for text, source in texts_with_sources:
         for chunk in splitter.split_text(text):
-            all_chunks.append(chunk)
-            chunk_sources.append(source)
+            new_chunks.append(chunk)
+            new_chunk_sources.append(source)
 
-    embeddings = get_embed_model().encode(all_chunks, show_progress_bar=False)
-    normalized_embeddings = normalize_vectors(np.array(embeddings).astype('float32'))
-    index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
-    index.add(normalized_embeddings)
+    if existing_corpus is None:
+        all_chunks = new_chunks
+        chunk_sources = new_chunk_sources
 
-    tokenized_chunks = [chunk.lower().split() for chunk in all_chunks]
-    bm25 = BM25Okapi(tokenized_chunks)
+        embeddings = get_embed_model().encode(all_chunks, show_progress_bar=False)
+        normalized_embeddings = normalize_vectors(np.array(embeddings).astype('float32'))
+        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
+        index.add(normalized_embeddings)
+
+        tokenized_chunks = [chunk.lower().split() for chunk in all_chunks]
+        bm25 = BM25Okapi(tokenized_chunks)
+    else:
+        all_chunks = existing_corpus["all_chunks"] + new_chunks
+        chunk_sources = existing_corpus["chunk_sources"] + new_chunk_sources
+        index = existing_corpus["index"]
+
+        # Incremental FAISS update
+        new_embeddings = get_embed_model().encode(new_chunks, show_progress_bar=False)
+        normalized_new_embeddings = normalize_vectors(np.array(new_embeddings).astype('float32'))
+        index.add(normalized_new_embeddings)
+
+        # Incremental BM25 update (re-initialize since BM25Okapi doesn't support add)
+        tokenized_chunks = [chunk.lower().split() for chunk in all_chunks]
+        bm25 = BM25Okapi(tokenized_chunks)
 
     return {
         "all_chunks": all_chunks,
@@ -278,26 +300,51 @@ def get_context_for_question(corpus, question, top_k=5, small_doc_threshold=25):
         return hybrid_search_reranked(corpus, question, top_k=top_k)
 
 
-# ---------------- Main Q&A function ----------------
+def expand_query(question):
+    """
+    Uses the LLM to generate 3 semantically similar variations of the user query
+    to improve retrieval recall.
+    """
+    prompt = (
+        "You are an AI research assistant. Your task is to take a user question and generate 3 alternative "
+        "versions of the question that capture the same intent but use different wording. This will help "
+        "improve retrieval recall. Output only the 3 questions, one per line, without numbering."
+    )
+
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": question}
+    ]
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages
+    )
+
+    variations = response.choices[0].message.content.strip().split("\n")
+    # Clean up any numbering if the LLM ignored the "without numbering" instruction
+    cleaned_variations = [re.sub(r"^\d+[\.\)]\s*", "", v).strip() for v in variations if v.strip()]
+    return cleaned_variations[:3]
 
 def ask_question(corpus, question, top_k=5, small_doc_threshold=25):
     all_chunks = corpus["all_chunks"]
     chunk_sources = corpus["chunk_sources"]
 
-    comparison_words = [" vs ", " versus ", "compare", "difference between"]
-    is_comparison = any(word in question.lower() for word in comparison_words)
-
-    if is_comparison and len(all_chunks) > small_doc_threshold:
-        parts = question.replace("Compare how", "").replace("compare", "").split(" and ")
-        sub_questions = [p.strip() + " improve retrieval accuracy?" for p in parts[:2]]
-        all_indices = []
-        for sub_q in sub_questions:
-            indices = hybrid_search_reranked(corpus, sub_q, top_k=top_k)
-            all_indices.extend(indices)
-        seen = set()
-        top_indices = [i for i in all_indices if not (i in seen or seen.add(i))]
+    if len(all_chunks) <= small_doc_threshold:
+        top_indices = list(range(len(all_chunks)))
     else:
-        top_indices = get_context_for_question(corpus, question, top_k=top_k, small_doc_threshold=small_doc_threshold)
+        # Multi-Query Expansion for better recall
+        expanded_queries = expand_query(question)
+        all_queries = [question] + expanded_queries
+
+        all_indices = []
+        for q in all_queries:
+            indices = hybrid_search_reranked(corpus, q, top_k=top_k)
+            all_indices.extend(indices)
+
+        # Deduplicate while preserving order
+        seen = set()
+        top_indices = [i for i in all_indices if not (i in seen or seen.add(i))][:top_k]
 
     retrieved_chunks = [all_chunks[idx] for idx in top_indices]
     sources = [chunk_sources[idx] for idx in top_indices]
@@ -308,7 +355,7 @@ def ask_question(corpus, question, top_k=5, small_doc_threshold=25):
               "Context:\n" + context + "\n\nQuestion: " + question + "\n\nAnswer:")
 
     response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -331,7 +378,7 @@ def summarize_text(text, source_name="this document", max_chars=15000):
                "Content:\n" + trimmed_text)
 
     response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}]
     )
 
